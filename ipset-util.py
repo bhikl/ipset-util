@@ -1,77 +1,93 @@
-import sys
-import dns.resolver
 from subprocess import PIPE, run
-import ipaddress
+
 import re
+import sys
+import ipaddress
+import dns.resolver
+
+WRONG_ARGS_ERR = 1
+IPSET_NOT_INSTALLED_ERR = 2
+UNEXPECTED_ERR = 3
+
 
 def main(argv):
-    ips = []
-    changed = False
-
-    if len(argv) != 2:
+    if len(argv) < 2:
         print('usage: dnsuitl <dnsname> <ipset_name>')
-        exit(2)
+        sys.exit(WRONG_ARGS_ERR)
+
+    dns_name = argv[0]
+    ipset_name = argv[1]
 
     try:
-        ans = dns.resolver.resolve(argv[0], 'A')
+        answer = dns.resolver.resolve(dns_name, 'A')
     except:
         print('A record not found')
-        exit(1)
+        sys.exit(1)
 
-    for rdata in ans:
+    ips = []
+    for rdata in answer:
         ips.append(rdata.address)
 
     try:
-        result = ipset('create', argv[1], 'iphash')
+        result = ipset('create', ipset_name, 'iphash')
+
         if result.returncode == 0:
-            print('Create list', argv[1])
-            for ip in ips:
-                ipset('add', argv[1], ip)
-            print('with ips:')
-            current_ip = get_ip(ipset('list', argv[1]))
-            for ip in current_ip:
-                print(ip)
+            changed = True
+
+            print('Create list', ipset_name)
+
+            for ip_adr in ips:
+                ipset('add', ipset_name, ip_adr)
         elif result.returncode == 1:
-            if re.search(r'set with the same name already exists', result.stderr): 
-                current_ip = get_ip(ipset('list', argv[1]))
-                to_add, to_remove = diff(ips, current_ip)
+            if re.search(r'set with the same name already exists', result.stderr):
+                changed = False
+                to_add, to_remove = diff(
+                    ips, get_ip(ipset('list', ipset_name)))
+
                 for item in to_add:
-                    ipset('add', argv[1], item)
-                    changed = True
+                    ipset('add', ipset_name, item)
                     print('add', item)
-                for item in to_remove:
-                    result = ipset('del', argv[1], item)
                     changed = True
-                    print('remove', item)
-                if changed:
-                    print('Current ipset list:')
-                    current_ip = get_ip(ipset('list', argv[1]))
-                    for ip in current_ip:
-                        print(ip)
-                else:
-                    print('No changes')                  
+
+                for item in to_remove:
+                    ipset('del', ipset_name, item)
+                    print('del', item)
+                    changed = True
+
             elif re.search(r'Operation not permitted', result.stderr):
                 print('Need root privileges')
         else:
-            print('Unexpected error:', result.stderr)  
-    except OSError as e:
-        print(e)
+            print('Unexpected error:', result.stderr)
+            sys.exit(UNEXPECTED_ERR)
+
+        if changed:
+            print('Current ipset list:')
+            for ip_adr in get_ip(ipset('list', ipset_name)):
+                print(ip_adr)
+        else:
+            print('No changes')
+            return
+
+    except OSError:
         print('Please install ipset')
-        exit(1)
+        sys.exit(IPSET_NOT_INSTALLED_ERR)
+
 
 def valid_ip(address):
-    try: 
+    try:
         ipaddress.ip_address(address)
         return True
     except:
         return False
-    
-def ipset(command, arg1, arg2 = ''):
+
+
+def ipset(command, arg1, arg2=''):
     if arg2 == '':
-        return run(['ipset', command, arg1], stdout=PIPE, stderr=PIPE, universal_newlines=True)   
+        return run(['ipset', command, arg1], stdout=PIPE, stderr=PIPE, universal_newlines=True)
     else:
         return run(['ipset', command, arg1, arg2], stdout=PIPE, stderr=PIPE, universal_newlines=True)
-    
+
+
 def get_ip(out):
     temp = []
     for ip in out.stdout.splitlines():
@@ -79,8 +95,10 @@ def get_ip(out):
             temp.append(ip)
     return temp
 
+
 def diff(in_ip, current_ip):
     return list(set(in_ip) - set(current_ip)), list(set(current_ip) - set(in_ip))
+
 
 if __name__ == '__main__':
     main(sys.argv[1:])
